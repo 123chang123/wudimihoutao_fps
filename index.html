@@ -1,0 +1,622 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>性能分析小工具</title>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/socket.io-client@4.7.2/dist/socket.io.min.js"></script>
+    <style>
+        :root { --primary: #4f46e5; --bg: #0f172a; --card: #1e293b; --text: #f8fafc; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', system-ui; background: var(--bg); color: var(--text); padding: 20px; }
+
+        .main-grid { display: grid; grid-template-columns: 380px 1fr; gap: 20px; max-width: 1600px; margin: 0 auto; }
+
+        .card { background: var(--card); padding: 20px; border-radius: 16px; box-shadow: 0 4px 20px rgba(0,0,0,0.2); margin-bottom: 20px; }
+
+        .status-badge { display: inline-block; padding: 4px 12px; border-radius: 20px; font-size: 0.85rem; background: rgba(79, 70, 229, 0.2); color: #818cf8; }
+        .fps-value { font-size: 4rem; font-weight: 800; color: #10b981; line-height: 1; }
+
+        .btn { width: 100%; padding: 12px; border: none; border-radius: 8px; font-weight: bold; cursor: pointer; transition: 0.3s; margin-top: 8px; }
+        .btn-primary { background: #4f46e5; color: white; }
+        .btn-danger { background: #ef4444; color: white; }
+        .btn-danger.active { background: #334155; animation: pulse 1.5s infinite; }
+        .btn-secondary { background: #334155; color: white; }
+        .mode-btn { background: #334155; color: white; margin-top: 5px; }
+        .mode-btn.active { background: #4f46e5; border: 1px solid #818cf8; }
+
+        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
+
+        #liveChart { height: 400px; width: 100%; }
+
+        .history-item { background: rgba(255,255,255,0.05); padding: 12px; border-radius: 8px; margin-bottom: 10px; cursor: pointer; transition: 0.2s; border-left: 3px solid #4f46e5; }
+        .history-item:hover { background: rgba(79,70,229,0.2); transform: translateX(-5px); }
+        .history-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; flex-wrap: wrap; gap: 5px; }
+        .history-time { font-size: 0.8rem; color: #818cf8; }
+        .history-stats { display: flex; gap: 15px; font-size: 0.8rem; }
+        .history-stats span { color: #10b981; font-weight: bold; }
+        .history-actions { display: flex; gap: 8px; margin-top: 8px; }
+        .history-actions button { padding: 4px 12px; font-size: 0.75rem; margin: 0; width: auto; }
+        .delete-history { background: #ef4444; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        .export-history { background: #4f46e5; color: white; border: none; border-radius: 4px; cursor: pointer; }
+
+        .report-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.95); z-index: 1000; display: none; overflow-y: auto; padding: 40px; }
+        .report-container { max-width: 1400px; margin: 0 auto; background: var(--bg); border-radius: 24px; padding: 30px; }
+        .report-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; flex-wrap: wrap; gap: 15px; }
+        .close-btn { background: #ef4444; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; }
+
+        .notes-section { margin-top: 30px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 20px; }
+        .note-item { background: rgba(79,70,229,0.1); padding: 12px; border-radius: 8px; margin-bottom: 10px; border-left: 3px solid #4f46e5; }
+        .note-time { font-size: 0.8rem; color: #818cf8; font-weight: bold; }
+        .note-text { margin-top: 5px; }
+        .add-note { display: flex; gap: 10px; margin-top: 15px; }
+        .add-note input { flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #334155; background: #0f172a; color: white; }
+
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 15px; margin: 20px 0; }
+        .stat-card { background: rgba(255,255,255,0.05); padding: 15px; border-radius: 12px; text-align: center; }
+        .stat-value { font-size: 1.5rem; font-weight: bold; color: #10b981; }
+        .stat-label { font-size: 0.75rem; opacity: 0.7; margin-top: 5px; }
+
+        .export-buttons { display: flex; gap: 10px; margin-top: 20px; flex-wrap: wrap; }
+        .history-scroll { max-height: 400px; overflow-y: auto; }
+
+        .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 0.7rem; background: #4f46e5; }
+
+        .status-text { font-size: 0.85rem; color: #94a3b8; margin-top: 8px; }
+    </style>
+</head>
+<body>
+    <div class="main-grid">
+        <div>
+            <div class="card">
+                <h3 style="margin-top:0">🎯 实时状态</h3>
+                <div id="packageName" style="font-weight:bold; color:#818cf8; margin-bottom:10px;">检测中...</div>
+                <div class="status-badge" id="engineType">引擎: 自动探测</div>
+                <div style="margin: 20px 0;">
+                    <div class="fps-value" id="currentFps">0.0</div>
+                    <div style="font-size:1rem; opacity:0.6">Current FPS</div>
+                </div>
+
+                <button id="recordBtn" class="btn btn-danger">🔴 开始录制分析报告</button>
+
+                <div class="mode-group" style="margin-top: 20px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 15px;">
+                    <div class="mode-title" style="margin-bottom: 10px; color: #818cf8;">🎮 算法切换</div>
+                    <button id="modeAuto" class="btn mode-btn active">🤖 自动探测</button>
+                    <button id="ModeSurface" class="btn mode-btn">🎯 SurfaceFlinger</button>
+                    <button id="ModeGfx" class="btn mode-btn">📱 Gfxinfo</button>
+                </div>
+            </div>
+
+            <div class="card">
+                <h3 style="margin-top:0">📜 历史报告记录</h3>
+                <div id="historyList" class="history-scroll">
+                    <div style="text-align:center; opacity:0.6; padding:20px;">暂无历史记录</div>
+                </div>
+                <button id="clearAllHistory" class="btn btn-secondary" style="background:#ef4444; margin-top:10px;">🗑️ 清空所有历史</button>
+            </div>
+        </div>
+
+        <div class="card">
+            <div id="liveChart"></div>
+            <div class="status-text" style="text-align:center; margin-top:12px;">📈 最近60秒帧率趋势图</div>
+        </div>
+    </div>
+
+    <div id="reportOverlay" class="report-overlay">
+        <div class="report-container">
+            <div class="report-header">
+                <h2 id="reportTitle">📊 性能分析详细报告</h2>
+                <div>
+                    <button onclick="closeReport()" class="close-btn">关闭</button>
+                </div>
+            </div>
+            <div id="reportContent"></div>
+            <div class="export-buttons">
+                <button id="exportHTMLBtn" class="btn btn-primary">📄 导出为HTML</button>
+                <button id="exportJSONBtn" class="btn btn-primary">📦 导出为JSON</button>
+                <button id="exportImageBtn" class="btn btn-primary">🖼️ 导出图表为图片</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let historyRecords = [];
+        let currentReportData = null;
+        let currentReportCharts = {};
+
+        const liveChart = echarts.init(document.getElementById('liveChart'), 'dark');
+        let liveTimeData = [], liveFpsData = [];
+        let isRecording = false, currentRecordingData = [];
+        let currentMode = 'auto';
+        let recordingNotes = [];
+
+        const liveOption = {
+            backgroundColor: 'transparent',
+            tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+            grid: { top: 20, left: 50, right: 20, bottom: 30 },
+            xAxis: { type: 'category', data: liveTimeData, name: '时间' },
+            yAxis: { type: 'value', name: 'FPS', min: 0, max: 130 },
+            series: [{
+                name: 'FPS',
+                type: 'line',
+                data: liveFpsData,
+                smooth: true,
+                areaStyle: { opacity: 0.3, color: '#4f46e5' },
+                lineStyle: { color: '#10b981', width: 2 },
+                symbol: 'none'
+            }]
+        };
+        liveChart.setOption(liveOption);
+
+        function loadHistory() {
+            const saved = localStorage.getItem('fps_history_records');
+            if(saved) {
+                try {
+                    historyRecords = JSON.parse(saved);
+                    renderHistoryList();
+                } catch(e) {}
+            }
+        }
+
+        function saveHistory() {
+            localStorage.setItem('fps_history_records', JSON.stringify(historyRecords));
+            renderHistoryList();
+        }
+
+        function renderHistoryList() {
+            const container = document.getElementById('historyList');
+            if(historyRecords.length === 0) {
+                container.innerHTML = '<div style="text-align:center; opacity:0.6; padding:20px;">暂无历史记录</div>';
+                return;
+            }
+
+            container.innerHTML = historyRecords.map((record, idx) => {
+                const avg = record.statistics.avg.toFixed(1);
+                const score = record.statistics.overallScore.toFixed(0);
+                const date = new Date(record.timestamp).toLocaleString();
+                return `
+                    <div class="history-item" onclick="viewReport(${idx})">
+                        <div class="history-header">
+                            <span class="badge">${record.package || '未知应用'}</span>
+                            <span class="history-time">${date}</span>
+                        </div>
+                        <div class="history-stats">
+                            <span>📊 ${avg} FPS</span>
+                            <span>⭐ ${score}分</span>
+                            <span>⏱️ ${record.duration.toFixed(0)}秒</span>
+                        </div>
+                        <div class="history-actions" onclick="event.stopPropagation()">
+                            <button class="export-history" onclick="exportRecordAsJSON(${idx})">导出JSON</button>
+                            <button class="delete-history" onclick="deleteRecord(${idx})">删除</button>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function deleteRecord(idx) {
+            if(confirm('确定要删除这条记录吗？')) {
+                historyRecords.splice(idx, 1);
+                saveHistory();
+            }
+        }
+
+        document.getElementById('clearAllHistory').onclick = () => {
+            if(confirm('确定要清空所有历史记录吗？')) {
+                historyRecords = [];
+                saveHistory();
+            }
+        };
+
+        function exportRecordAsJSON(idx) {
+            const record = historyRecords[idx];
+            const blob = new Blob([JSON.stringify(record, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `performance_${record.timestamp}.json`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
+        function viewReport(idx) {
+            const record = historyRecords[idx];
+            currentReportData = record;
+            showReport(record);
+        }
+
+        const socket = io();
+
+        socket.on('fps_update', (data) => {
+            document.getElementById('packageName').innerText = data.package_display;
+            document.getElementById('currentFps').innerText = data.fps.toFixed(1);
+            document.getElementById('engineType').innerText = "引擎: " + data.engine;
+
+            const now = new Date().toLocaleTimeString();
+            liveTimeData.push(now);
+            liveFpsData.push(data.fps);
+            if(liveTimeData.length > 60) {
+                liveTimeData.shift();
+                liveFpsData.shift();
+            }
+
+            liveChart.setOption({
+                xAxis: { data: liveTimeData },
+                series: [{ data: liveFpsData }]
+            });
+
+            if(isRecording) {
+                currentRecordingData.push({
+                    timestamp: Date.now(),
+                    time: now,
+                    fps: data.fps,
+                    package: data.package_display,
+                    engine: data.engine
+                });
+            }
+        });
+
+        const recordBtn = document.getElementById('recordBtn');
+        recordBtn.onclick = () => {
+            isRecording = !isRecording;
+            if(isRecording) {
+                recordBtn.innerText = "⏹ 停止并生成详细报告";
+                recordBtn.classList.add('active');
+                currentRecordingData = [];
+                recordingNotes = [];
+            } else {
+                recordBtn.innerText = "🔴 开始录制分析报告";
+                recordBtn.classList.remove('active');
+                generateAndSaveReport();
+            }
+        };
+
+        function generateAndSaveReport() {
+            if(currentRecordingData.length === 0) return;
+
+            const fpsValues = currentRecordingData.map(d => d.fps);
+            const avg = fpsValues.reduce((a,b)=>a+b)/fpsValues.length;
+            const min = Math.min(...fpsValues);
+            const max = Math.max(...fpsValues);
+            const sorted = [...fpsValues].sort((a,b)=>a-b);
+            const p50 = sorted[Math.floor(sorted.length * 0.5)];
+            const p95 = sorted[Math.floor(sorted.length * 0.95)];
+            const p99 = sorted[Math.floor(sorted.length * 0.99)];
+
+            const jankThreshold = avg * 0.8;
+            const janks = fpsValues.filter(f => f < jankThreshold);
+            const severeJanks = fpsValues.filter(f => f < 30);
+
+            const variance = fpsValues.map(x => Math.pow(x - avg, 2)).reduce((a,b)=>a+b) / fpsValues.length;
+            const stdDev = Math.sqrt(variance);
+
+            const distribution = {
+                '0-30': fpsValues.filter(f => f >= 0 && f < 30).length,
+                '30-45': fpsValues.filter(f => f >= 30 && f < 45).length,
+                '45-60': fpsValues.filter(f => f >= 45 && f < 60).length,
+                '60-90': fpsValues.filter(f => f >= 60 && f < 90).length,
+                '90+': fpsValues.filter(f => f >= 90).length
+            };
+
+            const stabilityScore = Math.max(0, Math.min(100, 100 - (stdDev / avg * 50)));
+            const smoothnessScore = Math.max(0, Math.min(100, 100 - (janks.length / fpsValues.length * 100)));
+            const overallScore = (stabilityScore + smoothnessScore) / 2;
+
+            const record = {
+                id: Date.now(),
+                timestamp: Date.now(),
+                package: currentRecordingData[0]?.package || '未知',
+                duration: currentRecordingData.length * 0.5,
+                dataPoints: currentRecordingData,
+                notes: recordingNotes,
+                statistics: {
+                    avg, min, max, p50, p95, p99,
+                    stdDev, janks: janks.length,
+                    severeJanks: severeJanks.length,
+                    jankRate: (janks.length / fpsValues.length * 100),
+                    overallScore,
+                    stabilityScore,
+                    smoothnessScore,
+                    distribution
+                }
+            };
+
+            historyRecords.unshift(record);
+            saveHistory();
+            currentReportData = record;
+            showReport(record);
+        }
+
+        function showReport(record) {
+            document.getElementById('reportOverlay').style.display = 'flex';
+            document.getElementById('reportTitle').innerHTML = `📊 性能分析报告 - ${new Date(record.timestamp).toLocaleString()}`;
+
+            const stats = record.statistics;
+
+            const reportHTML = `
+                <div class="stats-grid">
+                    <div class="stat-card"><div class="stat-value">${stats.avg.toFixed(1)}</div><div class="stat-label">平均帧率</div></div>
+                    <div class="stat-card"><div class="stat-value">${stats.min.toFixed(1)}</div><div class="stat-label">最低帧率</div></div>
+                    <div class="stat-card"><div class="stat-value">${stats.max.toFixed(1)}</div><div class="stat-label">最高帧率</div></div>
+                    <div class="stat-card"><div class="stat-value">${stats.p50.toFixed(1)}</div><div class="stat-label">P50 帧率</div></div>
+                    <div class="stat-card"><div class="stat-value">${stats.p95.toFixed(1)}</div><div class="stat-label">P95 帧率</div></div>
+                    <div class="stat-card"><div class="stat-value">${stats.p99.toFixed(1)}</div><div class="stat-label">P99 帧率</div></div>
+                    <div class="stat-card"><div class="stat-value">${stats.janks}</div><div class="stat-label">卡顿次数</div></div>
+                    <div class="stat-card"><div class="stat-value">${stats.jankRate.toFixed(1)}%</div><div class="stat-label">卡顿率</div></div>
+                    <div class="stat-card"><div class="stat-value">${stats.stdDev.toFixed(2)}</div><div class="stat-label">标准差</div></div>
+                    <div class="stat-card"><div class="stat-value" style="color: #fbbf24">${stats.overallScore.toFixed(0)}</div><div class="stat-label">综合评分</div></div>
+                    <div class="stat-card"><div class="stat-value">${record.duration.toFixed(0)}s</div><div class="stat-label">录制时长</div></div>
+                    <div class="stat-card"><div class="stat-value">${record.dataPoints.length}</div><div class="stat-label">数据点数</div></div>
+                </div>
+
+                <div style="margin: 20px 0;">
+                    <h3>📈 帧率趋势图</h3>
+                    <div id="reportChart" style="height: 400px;"></div>
+                </div>
+
+                <div style="margin: 20px 0;">
+                    <h3>📊 帧率分布</h3>
+                    <div id="distChart" style="height: 300px;"></div>
+                </div>
+
+                <div class="notes-section">
+                    <h3>📝 备注</h3>
+                    <div id="notesList"></div>
+                    <div class="add-note">
+                        <input type="text" id="noteInput" placeholder="添加备注..." onkeypress="if(event.key==='Enter') addNoteToCurrent()">
+                        <button onclick="addNoteToCurrent()" class="btn btn-primary" style="width: auto; padding: 10px 20px;">添加备注</button>
+                    </div>
+                </div>
+            `;
+
+            document.getElementById('reportContent').innerHTML = reportHTML;
+
+            setTimeout(() => {
+                const reportChart = echarts.init(document.getElementById('reportChart'), 'dark');
+                currentReportCharts.trend = reportChart;
+                const timeLabels = record.dataPoints.map(d => d.time);
+                const fpsSeries = record.dataPoints.map(d => d.fps);
+
+                reportChart.setOption({
+                    backgroundColor: 'transparent',
+                    tooltip: { trigger: 'axis' },
+                    toolbox: { feature: { saveAsImage: {} } },
+                    xAxis: { type: 'category', data: timeLabels, name: '时间', rotate: 45 },
+                    yAxis: { type: 'value', name: 'FPS', min: 0, max: 130 },
+                    series: [{
+                        name: 'FPS',
+                        type: 'line',
+                        data: fpsSeries,
+                        smooth: true,
+                        areaStyle: { opacity: 0.3 },
+                        lineStyle: { color: '#10b981', width: 2 },
+                        markPoint: {
+                            data: [
+                                { type: 'min', name: '最低' },
+                                { type: 'max', name: '最高' }
+                            ]
+                        },
+                        markLine: {
+                            data: [{ type: 'average', name: '平均', lineStyle: { color: '#fbbf24' } }]
+                        }
+                    }]
+                });
+
+                reportChart.on('click', (params) => {
+                    if(params.componentType === 'series') {
+                        const idx = params.dataIndex;
+                        const timePoint = record.dataPoints[idx].time;
+                        const fpsValue = record.dataPoints[idx].fps;
+                        const noteText = prompt(`在 ${timePoint} (FPS: ${fpsValue}) 添加备注:`);
+                        if(noteText) {
+                            record.notes.push({ time: timePoint, fps: fpsValue, text: noteText, timestamp: Date.now() });
+                            if(currentReportData === record) {
+                                renderNotesInReport(record);
+                            }
+                            saveHistory();
+                        }
+                    }
+                });
+
+                const distChart = echarts.init(document.getElementById('distChart'), 'dark');
+                currentReportCharts.dist = distChart;
+                distChart.setOption({
+                    backgroundColor: 'transparent',
+                    tooltip: { trigger: 'axis' },
+                    xAxis: { type: 'category', data: Object.keys(stats.distribution) },
+                    yAxis: { type: 'value', name: '帧数' },
+                    series: [{
+                        type: 'bar',
+                        data: Object.values(stats.distribution),
+                        itemStyle: { borderRadius: [5,5,0,0], color: '#4f46e5' }
+                    }]
+                });
+            }, 100);
+
+            renderNotesInReport(record);
+
+            document.getElementById('exportHTMLBtn').onclick = () => exportCurrentReportAsHTML(record);
+            document.getElementById('exportJSONBtn').onclick = () => exportCurrentReportAsJSON(record);
+            document.getElementById('exportImageBtn').onclick = () => exportCurrentChartAsImage();
+        }
+
+        function renderNotesInReport(record) {
+            const container = document.getElementById('notesList');
+            if(!container) return;
+
+            if(!record.notes || record.notes.length === 0) {
+                container.innerHTML = '<div style="opacity:0.6; text-align:center; padding:20px;">暂无备注，点击图表添加备注</div>';
+                return;
+            }
+
+            container.innerHTML = record.notes.map((note, idx) => `
+                <div class="note-item">
+                    <div class="note-time">🕐 ${note.time} (FPS: ${note.fps})</div>
+                    <div class="note-text">${note.text}</div>
+                    <button onclick="deleteNoteFromRecord(${idx})" style="background:#ef4444; border:none; padding:4px 12px; border-radius:4px; color:white; margin-top:8px; cursor:pointer;">删除</button>
+                </div>
+            `).join('');
+        }
+
+        function addNoteToCurrent() {
+            const input = document.getElementById('noteInput');
+            const text = input.value.trim();
+            if(!text || !currentReportData) return;
+
+            currentReportData.notes.push({
+                time: new Date().toLocaleTimeString(),
+                fps: currentReportData.dataPoints.length > 0 ? currentReportData.dataPoints[currentReportData.dataPoints.length-1].fps : 0,
+                text: text,
+                timestamp: Date.now()
+            });
+            input.value = '';
+            renderNotesInReport(currentReportData);
+            saveHistory();
+        }
+
+        function deleteNoteFromRecord(idx) {
+            if(currentReportData && currentReportData.notes) {
+                currentReportData.notes.splice(idx, 1);
+                renderNotesInReport(currentReportData);
+                saveHistory();
+            }
+        }
+
+        function closeReport() {
+            document.getElementById('reportOverlay').style.display = 'none';
+            currentReportCharts = {};
+        }
+
+        function exportCurrentReportAsHTML(record) {
+            const stats = record.statistics;
+            const fpsValues = record.dataPoints.map(d => d.fps);
+            const timeLabels = record.dataPoints.map(d => d.time);
+            const distCategories = ['0-30', '30-45', '45-60', '60-90', '90+'];
+            const distData = distCategories.map(cat => stats.distribution[cat] || 0);
+
+            const htmlContent = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>性能分析报告</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"><\/script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:Segoe UI,sans-serif;padding:40px;background:linear-gradient(135deg,#0f172a,#1e1b4b);color:#f8fafc}
+.container{max-width:1200px;margin:0 auto}
+.header{text-align:center;margin-bottom:40px;padding-bottom:20px;border-bottom:1px solid rgba(255,255,255,0.1)}
+.header h1{font-size:2.5rem;background:linear-gradient(135deg,#818cf8,#c084fc);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:16px;margin:30px 0}
+.stat-card{background:rgba(30,41,59,0.8);padding:20px;border-radius:20px;text-align:center}
+.stat-value{font-size:2rem;font-weight:bold;color:#10b981}
+.stat-label{font-size:0.75rem;opacity:0.7;margin-top:8px}
+.score-card{background:linear-gradient(135deg,#4f46e5,#7c3aed)}
+.score-card .stat-value{color:#fbbf24}
+.chart-container{margin:30px 0;background:rgba(15,23,42,0.6);border-radius:20px;padding:20px}
+.chart{height:400px;width:100%}
+.notes-section{margin:30px 0;background:rgba(30,41,59,0.6);border-radius:20px;padding:20px}
+.note-item{background:rgba(79,70,229,0.15);padding:12px;margin-bottom:10px;border-radius:12px;border-left:3px solid #4f46e5}
+.note-time{font-size:0.8rem;color:#a78bfa}
+.footer{text-align:center;margin-top:40px;padding-top:20px;border-top:1px solid rgba(255,255,255,0.1);color:#64748b}
+@media (max-width:768px){body{padding:20px}}
+</style>
+</head>
+<body>
+<div class="container">
+<div class="header">
+<h1>📊 性能分析报告</h1>
+<div>生成时间: ${new Date().toLocaleString()} | 测试应用: ${record.package} | 录制时长: ${record.duration.toFixed(0)}秒 | 数据点数: ${record.dataPoints.length}</div>
+</div>
+<div class="stats-grid">
+<div class="stat-card"><div class="stat-value">${stats.avg.toFixed(1)}</div><div class="stat-label">平均帧率</div></div>
+<div class="stat-card"><div class="stat-value">${stats.min.toFixed(1)}</div><div class="stat-label">最低帧率</div></div>
+<div class="stat-card"><div class="stat-value">${stats.max.toFixed(1)}</div><div class="stat-label">最高帧率</div></div>
+<div class="stat-card"><div class="stat-value">${stats.p50.toFixed(1)}</div><div class="stat-label">P50</div></div>
+<div class="stat-card"><div class="stat-value">${stats.p95.toFixed(1)}</div><div class="stat-label">P95</div></div>
+<div class="stat-card"><div class="stat-value">${stats.p99.toFixed(1)}</div><div class="stat-label">P99</div></div>
+<div class="stat-card"><div class="stat-value">${stats.stdDev.toFixed(2)}</div><div class="stat-label">标准差</div></div>
+<div class="stat-card"><div class="stat-value">${stats.jankRate.toFixed(1)}%</div><div class="stat-label">卡顿率</div></div>
+<div class="stat-card"><div class="stat-value">${stats.janks}</div><div class="stat-label">卡顿次数</div></div>
+<div class="stat-card"><div class="stat-value">${stats.severeJanks}</div><div class="stat-label">严重抖动</div></div>
+<div class="stat-card score-card"><div class="stat-value">${stats.overallScore.toFixed(0)}</div><div class="stat-label">综合评分</div></div>
+<div class="stat-card"><div class="stat-value">${Math.round(record.duration)}s</div><div class="stat-label">录制时长</div></div>
+</div>
+<div class="chart-container"><div class="chart-title">📈 帧率趋势图</div><div id="trendChart" class="chart"></div></div>
+<div class="chart-container"><div class="chart-title">📊 帧率分布</div><div id="distChart" class="chart"></div></div>
+<div class="notes-section"><h3>📝 备注</h3>${(record.notes || []).map(n => `<div class="note-item"><div class="note-time">🕐 ${n.time} (FPS: ${n.fps})</div><div class="note-text">${n.text}</div></div>`).join('') || '<div style="opacity:0.6;text-align:center">暂无备注</div>'}</div>
+<div class="footer">Generated by 性能分析系统小工具</div>
+</div>
+<script>
+window.addEventListener('load',function(){
+var chart1=echarts.init(document.getElementById('trendChart'));
+chart1.setOption({backgroundColor:'transparent',tooltip:{trigger:'axis'},grid:{top:30,left:60,right:30,bottom:40},xAxis:{type:'category',data:${JSON.stringify(timeLabels)},name:'时间',axisLabel:{rotate:45}},yAxis:{type:'value',name:'FPS',min:0,max:130},series:[{name:'FPS',type:'line',data:${JSON.stringify(fpsValues)},smooth:true,areaStyle:{opacity:0.3},lineStyle:{color:'#10b981',width:2},markPoint:{data:[{type:'min',name:'最低'},{type:'max',name:'最高'}]},markLine:{data:[{type:'average',name:'平均',lineStyle:{color:'#fbbf24'}}]}}]});
+var chart2=echarts.init(document.getElementById('distChart'));
+chart2.setOption({backgroundColor:'transparent',tooltip:{trigger:'axis'},xAxis:{type:'category',data:${JSON.stringify(distCategories)}},yAxis:{type:'value',name:'帧数'},series:[{type:'bar',data:${JSON.stringify(distData)},itemStyle:{borderRadius:[8,8,0,0],color:'#4f46e5'},label:{show:true,position:'top'}}]});
+window.addEventListener('resize',function(){chart1.resize();chart2.resize()});
+});
+<\/script>
+</body>
+</html>`;
+
+            const blob = new Blob([htmlContent], { type: 'text/html' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `performance_report_${Date.now()}.html`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
+        function exportCurrentReportAsJSON(record) {
+            const blob = new Blob([JSON.stringify(record, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `performance_data_${record.timestamp}.json`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
+        function exportCurrentChartAsImage() {
+            if(currentReportCharts.trend) {
+                const url = currentReportCharts.trend.getDataURL({ type: 'png' });
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `fps_chart_${Date.now()}.png`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+            }
+        }
+
+        function switchMode(mode) {
+            currentMode = mode;
+            document.getElementById('modeAuto').classList.remove('active');
+            document.getElementById('ModeSurface').classList.remove('active');
+            document.getElementById('ModeGfx').classList.remove('active');
+            if(mode === 'auto') document.getElementById('modeAuto').classList.add('active');
+            else if(mode === 'surfaceflinger') document.getElementById('ModeSurface').classList.add('active');
+            else if(mode === 'gfxinfo') document.getElementById('ModeGfx').classList.add('active');
+            fetch(`/switch_mode?mode=${mode}`).catch(err => console.error(err));
+        }
+
+        document.getElementById('modeAuto').onclick = () => switchMode('auto');
+        document.getElementById('ModeSurface').onclick = () => switchMode('surfaceflinger');
+        document.getElementById('ModeGfx').onclick = () => switchMode('gfxinfo');
+
+        window.addEventListener('resize', () => {
+            liveChart.resize();
+            if(currentReportCharts.trend) currentReportCharts.trend.resize();
+            if(currentReportCharts.dist) currentReportCharts.dist.resize();
+        });
+
+        loadHistory();
+    </script>
+</body>
+</html>
