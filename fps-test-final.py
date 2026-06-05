@@ -391,12 +391,5 @@ async def index_route():
 
 
 if __name__ == "__main__":
-    print("=" * 60)
-    print("🎮 G老师智能双模锁帧性能分析系统 Pro")
-    print("=" * 60)
-    print("已启用吸附对齐算法：自动过滤时间轴微秒抖动，让满帧数据强迫症大满足")
-    print("✨ 新增功能：支持手动切换算法模式（Auto/SurfaceFlinger/Gfxinfo）")
     print("请在浏览器中打开: http://127.0.0.1:8000")
-    print("=" * 60)
-
     uvicorn.run(sio_app, host="127.0.0.1", port=8000, log_level="warning")
